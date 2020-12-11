@@ -1,0 +1,133 @@
+---
+title: "Predicting Weight Lifting Exercises"
+author: "Mark Kiel"
+date: "`r Sys.Date()`"
+always_allow_html: yes
+---
+
+<br />
+
+```{css, echo=FALSE}
+.codebg {
+  background-color: lightgray;
+}
+
+### Synopsis
+
+### Initial Setup
+```{r init, class.source="codebg", message=FALSE}
+library(caret)
+library(randomForest)
+training <- read.csv("pml-training.csv", header=T)
+testing <- read.csv("pml-testing.csv", header=T)
+seed <- 332
+```
+
+### Data Exploration
+```{r missingdata, class.source="codebg"}
+sumMissing <- sapply(training, function(x) sum(is.na(x)))
+colsMissing <- names(training[sumMissing > 0])
+indexMissing <- which(names(training) %in% colsMissing)
+table(sumMissing, dnn=c("Features missing 0 or 19216 values"))
+
+rowCompleteClass <- training[complete.cases(training), "classe"]
+table(rowCompleteClass, dnn="Class results of complete rows")
+rowIncompleteClass <- training[!complete.cases(training), "classe"]
+table(rowIncompleteClass, dnn="Class results of incomplete rows")
+
+new_train <- training[-c(1:7, 160, indexMissing)] # 75 features removed
+new_test  <- testing[-c(1:7, 160, indexMissing)]
+```
+
+There are 67 columns with missing values and each has exactly 19,216 of these.
+Looking at the class results for those rows that are complete and incomplete,
+there doesn't seem to be a meaningful difference in proportions. Therefore, 
+removing the features with missing values should not have a large impact on the
+model performance.
+
+<br />
+
+```{r zerovariance, class.source="codebg", cache=T}
+nz <- which(nearZeroVar(new_train, saveMetrics=T)$nzv == TRUE)
+c("Features with near-zero variance"=length(nz))
+new_train <- new_train[-c(nz)]
+new_test <- new_test[-c(nz)]
+```
+
+More features could be removed by checking those with a variance near zero.
+These would likely not improve the model much as they wouldn't contribute 
+enough information to affect the classification of the training data. Removing
+these features may also speed up the model fitting process, though it has not
+been tested in this report.
+
+<br />
+
+With the large number of features in the data set and the need for a classifier
+prediction, a random forest model should work well. Three different random
+forest models were created, using different functions and hyperparameters.
+
+### Model 1 : Random Forest with Out-of-bag error
+```{r model1, cache=T, class.source="codebg"}
+set.seed(seed)
+rf1 <- randomForest(new_train, training$classe, importance=T)
+rf1
+```
+
+```{r featureimportance, class.source="codebg"}
+imp <- sort(importance(rf1)[,"MeanDecreaseAccuracy"], decreasing=T)
+varImpPlot(rf1)
+indexImp <- which(names(new_train) %in% names(imp[1:24]))
+```
+
+The first model uses a forest of 500 trees and splits on 7 variables at each
+branch of the tree. The accuracy is over 99% with class A almost predicted
+perfectly. The variable importance is displayed in a plot showing which features
+will decrease the accuracy the most if omitted from the model. For the next
+model only the most important 24 features will be used for prediction.
+
+<br />
+
+### Model 2: Random Forest using 10-fold cross validation and reduced features
+```{r model2, eval=T, class.source="codebg", cache=T}
+set.seed(seed)
+model2_train <- new_train[,c(indexImp)]
+control <- trainControl(method="cv", number=10, search="random")
+rf2 <- train(model2_train, training$classe, method="rf", metric="Accuracy",
+             tuneLength=10, trControl=control, ntree=100)
+confusionMatrix(rf2)
+```
+
+Model 2 uses 10-fold cross validation with only 100 trees. The prediction
+classification is similar to the previous model and it actually has perfect
+prediction results for classes D and E. The reduced feature set doesn't seem to
+have any impact on the classification performance and accuracy.
+
+<br />
+
+### Model 3: Random Forest using the Ranger implementation
+```{r model3, eval=T, class.source="codebg", message=FALSE, cache=T}
+library(ranger)
+rf3 <- ranger(training$classe ~ ., data=new_train, importance="impurity",
+             num.trees=1000, seed=seed, write.forest=TRUE, verbose=F)
+rf3             
+rf3$confusion.matrix
+```
+
+The final model uses the Ranger implementation of the Random Forest classifier.
+Since this method performs faster during model fitting, 1000 trees were used
+during classification. Again, the results were almost the same with almost
+perfect prediction on class A.
+
+<br />
+
+### Predictions
+```{r predictions, eval=T, class.source="codebg"}
+predict(rf1, new_test)
+predict(rf2, new_test)
+predict(rf3, new_test)$predictions
+```
+
+Each model correctly predicted the exercise class for each individual sample
+in the test data set, according to the project quiz. Of course, additonal test
+data would be needed to confirm the existence of model over-fitting. However,
+only these 20 test samples were provided.
